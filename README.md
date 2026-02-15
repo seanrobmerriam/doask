@@ -1,6 +1,6 @@
 # dk
 
-`dk` is a small two-process privilege elevation tool for Linux:
+`dk` is a small two-process privilege elevation tool for Unix-like systems (Linux and OpenBSD):
 
 - `dk`: client CLI (`dk <command> [args...]`)
 - `dkd`: root daemon that authenticates the caller via SSH challenge/response and executes the requested command as root
@@ -13,6 +13,34 @@ Build and install both binaries into your `GOBIN`:
 
 ```bash
 go install ./cmd/...
+```
+
+## Install on OpenBSD
+
+Install Go, build, and place binaries in a root-owned path:
+
+```bash
+doas pkg_add go
+git clone https://github.com/seanrobmerriam/doask.git
+cd doask
+go install ./cmd/...
+doas install -m 0755 "$(go env GOPATH)/bin/dk" /usr/local/bin/dk
+doas install -m 0755 "$(go env GOPATH)/bin/dkd" /usr/local/bin/dkd
+```
+
+Create the allowlist file:
+
+```bash
+doas mkdir -p /etc/dk
+doas touch /etc/dk/authorized_keys
+doas chown root:wheel /etc/dk/authorized_keys
+doas chmod 600 /etc/dk/authorized_keys
+```
+
+Run the daemon as root (example):
+
+```bash
+doas /usr/local/bin/dkd -a /etc/dk/authorized_keys -s /var/run/dk.sock
 ```
 
 ## Runtime Layout
@@ -125,4 +153,4 @@ Defaults:
 - No anti-replay beyond per-connection nonce (no session cache or rate limiting).
 - No TTY emulation or PAM integration; behavior is command-stream based over a Unix socket.
 - Environment forwarding is intentionally minimal; some programs may behave differently from `sudo`.
-- This project is Linux/systemd-oriented and does not target non-Unix platforms.
+- Service management instructions in this README are systemd-specific for Linux; OpenBSD users should run `dkd` with local `rc.d`/`rcctl` conventions.
