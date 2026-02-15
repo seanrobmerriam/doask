@@ -13,6 +13,7 @@ import (
 
 	"github.com/seanrobmerriam/doask/internal/auth"
 	"github.com/seanrobmerriam/doask/internal/proto"
+	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 )
 
@@ -40,25 +41,13 @@ func run() int {
 		return 1
 	}
 
-	keyPath := *privateKeyPath
-	if keyPath == "" {
-		var err error
-		keyPath, err = auth.DefaultPrivateKeyPath()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "dk: %v\n", err)
-			return 1
-		}
-	}
-
-	signer, err := auth.LoadSignerFromFile(keyPath, func(_ string) ([]byte, error) {
-		fmt.Fprintf(os.Stderr, "Enter passphrase for %s: ", keyPath)
-		pass, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Fprintln(os.Stderr)
-		return pass, err
-	})
+	signer, signerClose, err := resolveSigner(*privateKeyPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dk: %v\n", err)
 		return 1
+	}
+	if signerClose != nil {
+		defer signerClose.Close()
 	}
 
 	conn, err := net.Dial("unix", *socketPath)
@@ -170,6 +159,39 @@ func run() int {
 
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage: dk [-k <private-key>] [-s <socket>] <command> [args...]")
+}
+
+func resolveSigner(privateKeyPath string) (signer ssh.Signer, closeFn io.Closer, err error) {
+	if privateKeyPath != "" {
+		s, e := auth.LoadSignerFromFile(privateKeyPath, func(_ string) ([]byte, error) {
+			fmt.Fprintf(os.Stderr, "Enter passphrase for %s: ", privateKeyPath)
+			pass, err := term.ReadPassword(int(os.Stdin.Fd()))
+			fmt.Fprintln(os.Stderr)
+			return pass, err
+		})
+		return s, nil, e
+	}
+
+	agentSigner, agentCloser, agentErr := auth.LoadSignerFromAgentEnv()
+	if agentErr == nil {
+		return agentSigner, agentCloser, nil
+	}
+
+	keyPath, err := auth.DefaultPrivateKeyPath()
+	if err != nil {
+		return nil, nil, fmt.Errorf("%v; ssh-agent unavailable: %v", err, agentErr)
+	}
+
+	signerFromFile, err := auth.LoadSignerFromFile(keyPath, func(_ string) ([]byte, error) {
+		fmt.Fprintf(os.Stderr, "Enter passphrase for %s: ", keyPath)
+		pass, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Fprintln(os.Stderr)
+		return pass, err
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return signerFromFile, nil, nil
 }
 
 func streamStdin(pconn *proto.Conn) error {

@@ -6,6 +6,7 @@
 - `dkd`: root daemon that authenticates the caller via SSH challenge/response and executes the requested command as root
 
 It is designed to be a `sudo`-like workflow in a shell session, but with SSH key authentication instead of password prompts.
+By default, `dk` tries `ssh-agent` first (via `SSH_AUTH_SOCK`) and falls back to local key files.
 
 ## Install
 
@@ -128,6 +129,22 @@ dk -k ~/.ssh/id_rsa whoami
 dk -s /tmp/dk.sock uname -a
 ```
 
+### Remote Server Workflow (use your home-machine key)
+
+If you SSH into a server and want `dk` there to authenticate using your local key, use SSH agent forwarding:
+
+```bash
+ssh -A user@remote-host
+```
+
+Then on the remote host:
+
+1. Run `dkd` as root on the remote host.
+2. Add your local public key to `/etc/dk/authorized_keys` on the remote host.
+3. Run `dk <command>` normally.
+
+`dk` will sign the challenge through the forwarded agent socket, so the private key stays on your home machine.
+
 Daemon usage:
 
 ```bash
@@ -146,6 +163,7 @@ Defaults:
 - The daemon only forwards a constrained environment (`PATH`, `TERM`, `LANG`) and forces `HOME=/root`.
 - Authentication uses a random 32-byte nonce with signature verification using the provided public key.
 - All authentication attempts are logged to stderr and syslog.
+- If using SSH agent forwarding (`ssh -A`), remember that remote root-level processes may be able to use your forwarded agent while the session is active.
 
 ## Known Limitations
 

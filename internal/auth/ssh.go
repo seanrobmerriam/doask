@@ -5,11 +5,15 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 )
 
 type PassphrasePrompt func(prompt string) ([]byte, error)
@@ -45,6 +49,39 @@ func LoadSignerFromFile(path string, prompt PassphrasePrompt) (ssh.Signer, error
 		return nil, fmt.Errorf("create signer: %w", err)
 	}
 	return signer, nil
+}
+
+func LoadSignerFromAgentEnv() (ssh.Signer, io.Closer, error) {
+	sock := os.Getenv("SSH_AUTH_SOCK")
+	if strings.TrimSpace(sock) == "" {
+		return nil, nil, fmt.Errorf("SSH_AUTH_SOCK is not set")
+	}
+	return LoadSignerFromAgentSocket(sock)
+}
+
+func LoadSignerFromAgentSocket(sockPath string) (ssh.Signer, io.Closer, error) {
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("connect to ssh-agent: %w", err)
+	}
+
+	client := agent.NewClient(conn)
+	signers, err := client.Signers()
+	if err != nil {
+		_ = conn.Close()
+		return nil, nil, fmt.Errorf("read ssh-agent keys: %w", err)
+	}
+	if len(signers) == 0 {
+		_ = conn.Close()
+		return nil, nil, fmt.Errorf("ssh-agent has no identities")
+	}
+
+	signer, err := preferredSigner(signers)
+	if err != nil {
+		_ = conn.Close()
+		return nil, nil, err
+	}
+	return signer, conn, nil
 }
 
 func parsePrivateKey(keyData []byte, prompt PassphrasePrompt) (any, error) {
@@ -130,5 +167,37 @@ func PublicKeyAuthorized(path string, candidate ssh.PublicKey) (bool, error) {
 func zero(b []byte) {
 	for i := range b {
 		b[i] = 0
+	}
+}
+
+func preferredSigner(signers []ssh.Signer) (ssh.Signer, error) {
+	type rankedSigner struct {
+		signer ssh.Signer
+		rank   int
+	}
+	ranked := make([]rankedSigner, 0, len(signers))
+	for _, s := range signers {
+		ranked = append(ranked, rankedSigner{
+			signer: s,
+			rank:   signerRank(s.PublicKey().Type()),
+		})
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		return ranked[i].rank < ranked[j].rank
+	})
+	if len(ranked) == 0 {
+		return nil, fmt.Errorf("no usable signer")
+	}
+	return ranked[0].signer, nil
+}
+
+func signerRank(keyType string) int {
+	switch keyType {
+	case ssh.KeyAlgoED25519:
+		return 0
+	case ssh.KeyAlgoRSA:
+		return 1
+	default:
+		return 2
 	}
 }
